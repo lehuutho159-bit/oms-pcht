@@ -42,8 +42,11 @@ def find_month_columns(df_raw, target_month):
     base_col = month_mapping.get(target_month, 21)
     return base_col, base_col + 1
 
-def generate_report(mode='thang'):
-    """Báo cáo chi tiết phân tách rạch ròi 3 bộ chỉ tiêu từ dữ liệu người dùng gửi qua chat"""
+def generate_report(mode='thang', filter_type='all'):
+    """
+    mode: 'thang' hoặc 'luy_ke'
+    filter_type: 'all' (Tất cả), 'red' (Vượt KH), 'yellow' (Cảnh báo)
+    """
     if UPLOADED_FILES['thc'] is None:
         return "❌ Bạn chưa gửi file Tổng hợp chung (THC) lên Telegram! Vui lòng gửi đủ file trước khi xem báo cáo."
     
@@ -54,7 +57,14 @@ def generate_report(mode='thang'):
         
         target_month = datetime.datetime.now().month
         th_col, kh_col = (3, 4) if mode == 'luy_ke' else find_month_columns(df_thc, target_month)
-        title = f"BÁO CÁO LŨY KẾ NĂM - OMS PCHT" if mode == 'luy_ke' else f"BÁO CÁO THÁNG {target_month} - OMS PCHT"
+        
+        period_str = f"LŨY KẾ NĂM" if mode == 'luy_ke' else f"THÁNG {target_month}"
+        filter_titles = {
+            'all': 'TẤT CẢ CHỈ TIÊU',
+            'red': 'DANH SÁCH VƯỢT KẾ HOẠCH (>= 100%)',
+            'yellow': 'DANH SÁCH CẢNH BÁO (90% - < 100%)'
+        }
+        title = f"BÁO CÁO {period_str} - {filter_titles.get(filter_type, '')} - OMS PCHT"
         
         datasets = [
             ("THC lưới điện phân phối", df_thc, ['MAIFI', 'SAIDI', 'SAIFI']),     # 14 đơn vị x 3 = 42
@@ -108,22 +118,36 @@ def generate_report(mode='thang'):
                 else:
                     cat_good += 1
                     
+            # Lọc danh sách hiển thị theo tùy chọn của người dùng
+            display_red = red_list if filter_type in ['all', 'red'] else []
+            display_yellow = yellow_list if filter_type in ['all', 'yellow'] else []
+            
+            # Nếu chọn xem riêng Vượt KH hoặc Cảnh báo mà mục đó trống, có thể bỏ qua hoặc thông báo
+            if filter_type == 'red' and not red_list:
+                continue
+            if filter_type == 'yellow' and not yellow_list:
+                continue
+
             cat_rate = (cat_good / cat_total * 100) if cat_total > 0 else 0
             
             cat_msg = f"📁 **Bộ chỉ tiêu: {cat_name}**\n"
-            cat_msg += f"  • Tổng số: {cat_total} chỉ tiêu | Đạt tốt: {cat_good} ({cat_rate:.1f}%) | Vượt KH: {len(red_list)} | Cảnh báo: {len(yellow_list)}\n"
+            if filter_type == 'all':
+                cat_msg += f"  • Tổng số: {cat_total} chỉ tiêu | Đạt tốt: {cat_good} ({cat_rate:.1f}%) | Vượt KH: {len(red_list)} | Cảnh báo: {len(yellow_list)}\n"
             
-            if red_list:
-                cat_msg += "  🔴 Vượt KH (>= 100%):\n    " + "\n    ".join(red_list) + "\n"
-            if yellow_list:
-                cat_msg += "  🟡 Cảnh báo (90% - < 100%):\n    " + "\n    ".join(yellow_list) + "\n"
-            if not red_list and not yellow_list:
+            if display_red:
+                cat_msg += "  🔴 Vượt KH (>= 100%):\n    " + "\n    ".join(display_red) + "\n"
+            if display_yellow:
+                cat_msg += "  🟡 Cảnh báo (90% - < 100%):\n    " + "\n    ".join(display_yellow) + "\n"
+            
+            if filter_type == 'all' and not red_list and not yellow_list:
                 cat_msg += "  🟢 Đạt tốt tất cả các chỉ tiêu (< 90%)\n"
                 
             category_reports.append(cat_msg + "\n")
 
+        if not category_reports:
+            return f"=== {title} ===\n\n✨ Tuyệt vời! Không có đơn vị nào nằm trong danh mục lọc này."
+
         msg = f"=== {title} ===\n\n"
-        msg += "📋 **THỐNG KÊ CHI TIẾT TỪNG BỘ CHỈ TIÊU (CÔNG TY & 13 ĐIỆN LỰC):**\n\n"
         msg += "".join(category_reports)
         return msg
     except Exception as e:
@@ -214,7 +238,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(document.file_id)
     file_bytes = await file.download_as_bytearray()
     
-    # Tự động phân loại file dựa vào tên file bạn gửi
     if "chung" in file_name or "tong" in file_name or "thc" in file_name:
         UPLOADED_FILES['thc'] = bytes(file_bytes)
         await update.message.reply_text(f"✅ Đã nhận thành công file **Tổng hợp chung (THC)**: `{document.file_name}`")
@@ -225,7 +248,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         UPLOADED_FILES['sc'] = bytes(file_bytes)
         await update.message.reply_text(f"✅ Đã nhận thành công file **Sự cố**: `{document.file_name}`")
     else:
-        # Nếu tên file không rõ, mặc định gán vào THC hoặc nhắc người dùng
         UPLOADED_FILES['thc'] = bytes(file_bytes)
         await update.message.reply_text(f"⚠️ Đã nhận file `{document.file_name}` (được gán mặc định làm file THC).")
 
@@ -233,12 +255,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "Báo cáo thực hiện ĐTC PCHT":
+        # Tạo bảng chọn đầy đủ: Cả Tháng & Lũy kế kết hợp với 3 lựa chọn (Tất cả, Vượt KH, Cảnh báo)
         keyboard = [
-            [InlineKeyboardButton("📊 Lũy kế năm", callback_data="report_luyke"),
-             InlineKeyboardButton("📅 Số liệu tháng", callback_data="report_thang")]
+            [InlineKeyboardButton("📊 Tất cả (Tháng)", callback_data="rep_thang_all"),
+             InlineKeyboardButton("📊 Tất cả (Lũy kế)", callback_data="rep_luyke_all")],
+            [InlineKeyboardButton("🔴 Vượt KH (Tháng)", callback_data="rep_thang_red"),
+             InlineKeyboardButton("🔴 Vượt KH (Lũy kế)", callback_data="rep_luyke_red")],
+            [InlineKeyboardButton("🟡 Cảnh báo (Tháng)", callback_data="rep_thang_yellow"),
+             InlineKeyboardButton("🟡 Cảnh báo (Lũy kế)", callback_data="rep_luyke_yellow")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Vui lòng chọn loại báo cáo thực hiện ĐTC PCHT:", reply_markup=reply_markup)
+        await update.message.reply_text("👉 **Vui lòng chọn tiêu chí xem báo cáo ĐTC PCHT:**", reply_markup=reply_markup, parse_mode="Markdown")
         
     elif text == "💡 Biện pháp & Kiến nghị":
         rec_msg = get_recommendation_report()
@@ -267,12 +294,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "report_luyke":
-        report_content = generate_report(mode='luy_ke')
-        await query.message.reply_text(report_content)
-    elif query.data == "report_thang":
-        report_content = generate_report(mode='thang')
-        await query.message.reply_text(report_content)
+    data = query.data
+    if data == "rep_thang_all":
+        report_content = generate_report(mode='thang', filter_type='all')
+    elif data == "rep_thang_red":
+        report_content = generate_report(mode='thang', filter_type='red')
+    elif data == "rep_thang_yellow":
+        report_content = generate_report(mode='thang', filter_type='yellow')
+    elif data == "rep_luyke_all":
+        report_content = generate_report(mode='luy_ke', filter_type='all')
+    elif data == "rep_luyke_red":
+        report_content = generate_report(mode='luy_ke', filter_type='red')
+    elif data == "rep_luyke_yellow":
+        report_content = generate_report(mode='luy_ke', filter_type='yellow')
+    else:
+        report_content = "⚠️ Lựa chọn không hợp lệ."
+        
+    await query.message.reply_text(report_content)
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
@@ -281,5 +319,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("Bot đã được cập nhật logic đọc trực tiếp file từ Telegram vào bộ nhớ RAM...")
+    print("Bot đã được cập nhật tính năng phân loại báo cáo (Tất cả / Vượt KH / Cảnh báo)...")
     app.run_polling()
